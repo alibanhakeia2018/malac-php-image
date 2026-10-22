@@ -1,0 +1,63 @@
+name: build-php-image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - 'php-prestashop.ini'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  PHP_VERSION: "8.3.36"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Connexion a GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build et push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/prestashop-php:${{ env.PHP_VERSION }}
+            ghcr.io/${{ github.repository_owner }}/prestashop-php:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verification de la version PHP dans l'image
+        run: |
+          set -euo pipefail
+          IMG="ghcr.io/${{ github.repository_owner }}/prestashop-php:${{ env.PHP_VERSION }}"
+          docker pull "$IMG"
+          GOT=$(docker run --rm "$IMG" php -r 'echo PHP_VERSION;')
+          echo "PHP dans l'image : $GOT"
+          if [ "$GOT" != "${{ env.PHP_VERSION }}" ]; then
+            echo "::error::version PHP inattendue ($GOT au lieu de ${{ env.PHP_VERSION }})"; exit 1
+          fi
+          echo "--- extensions requises ---"
+          docker run --rm "$IMG" php -m > /tmp/mods.txt
+          for e in bcmath gd intl pdo_mysql soap zip; do
+            grep -qx "$e" /tmp/mods.txt || { echo "::error::extension manquante : $e"; exit 1; }
+            echo "  ok $e"
+          done
+          docker run --rm "$IMG" php -m | grep -qi "Zend OPcache" || { echo "::error::opcache manquant"; exit 1; }
+          echo "  ok opcache"
